@@ -151,6 +151,7 @@ export default function ScanApp({
       .from("products")
       .select("id, lightspeed_product_id, sku, barcode, name")
       .eq("venue_id", venueId)
+      .eq("is_active", true)
       .or(`barcode.eq.${value},sku.eq.${value}`)
       .limit(1)
       .maybeSingle();
