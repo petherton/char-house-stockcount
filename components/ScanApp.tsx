@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { buildStockCountCsv, downloadCsv } from "@/lib/csv";
+import { buildStockCountCsv, buildUnmatchedCsv, downloadCsv } from "@/lib/csv";
 
 type Product = {
   id: string;
@@ -16,6 +16,12 @@ type ItemRow = {
   rowId: string; // stock_session_items.id
   product: Product;
   quantity: string; // kept as string for free typing, parsed on save/export
+};
+
+type UnmatchedRow = {
+  rowId: string; // stock_session_unmatched.id
+  value: string;
+  at: string;
 };
 
 type Venue = { id: string; name: string };
@@ -38,7 +44,7 @@ export default function ScanApp({
   const [sessionStartedAt, setSessionStartedAt] = useState<string | null>(null);
   const [items, setItems] = useState<ItemRow[]>([]);
   const [barcode, setBarcode] = useState("");
-  const [unmatched, setUnmatched] = useState<{ value: string; at: string }[]>([]);
+  const [unmatched, setUnmatched] = useState<UnmatchedRow[]>([]);
   const [flash, setFlash] = useState<{ type: "ok" | "err"; text: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -47,7 +53,8 @@ export default function ScanApp({
     requestAnimationFrame(() => inputRef.current?.focus());
   }, []);
 
-  // Load (or create) the open session for this venue, plus its items.
+  // Load (or create) the open session for this venue, plus its items and any
+  // barcodes scanned during it that didn't match the catalogue.
   useEffect(() => {
     let cancelled = false;
     async function init() {
@@ -79,11 +86,18 @@ export default function ScanApp({
         startedAt = created.created_at;
       }
 
-      const { data: rows } = await supabase
-        .from("stock_session_items")
-        .select("id, quantity, product:products(id, lightspeed_product_id, sku, barcode, name)")
-        .eq("session_id", sid)
-        .order("updated_at", { ascending: false });
+      const [{ data: rows }, { data: unmatchedRows }] = await Promise.all([
+        supabase
+          .from("stock_session_items")
+          .select("id, quantity, product:products(id, lightspeed_product_id, sku, barcode, name)")
+          .eq("session_id", sid)
+          .order("updated_at", { ascending: false }),
+        supabase
+          .from("stock_session_unmatched")
+          .select("id, value, scanned_at")
+          .eq("session_id", sid)
+          .order("scanned_at", { ascending: false }),
+      ]);
 
       if (!cancelled) {
         setSessionId(sid!);
@@ -93,6 +107,13 @@ export default function ScanApp({
             rowId: r.id,
             product: r.product,
             quantity: r.quantity === null ? "" : String(r.quantity),
+          }))
+        );
+        setUnmatched(
+          (unmatchedRows ?? []).map((u: any) => ({
+            rowId: u.id,
+            value: u.value,
+            at: new Date(u.scanned_at).toLocaleTimeString(),
           }))
         );
         setLoading(false);
@@ -135,7 +156,22 @@ export default function ScanApp({
       .maybeSingle();
 
     if (error || !product) {
-      setUnmatched((prev) => [{ value, at: new Date().toLocaleTimeString() }, ...prev].slice(0, 20));
+      const { data: newUnmatched, error: unmatchedErr } = await supabase
+        .from("stock_session_unmatched")
+        .insert({ session_id: sessionId, value, scanned_by: userEmail })
+        .select("id, value, scanned_at")
+        .single();
+
+      if (!unmatchedErr && newUnmatched) {
+        setUnmatched((prev) => [
+          {
+            rowId: newUnmatched.id,
+            value: newUnmatched.value,
+            at: new Date(newUnmatched.scanned_at).toLocaleTimeString(),
+          },
+          ...prev,
+        ]);
+      }
       setFlash({ type: "err", text: `"${value}" isn't in the ${venueName} catalogue.` });
       focusInput();
       return;
@@ -199,6 +235,19 @@ export default function ScanApp({
       .update({ status: "exported", exported_at: new Date().toISOString() })
       .eq("id", sessionId);
     setFlash({ type: "ok", text: "CSV downloaded. Upload it to Lightspeed under Inventory → Stock counts." });
+  }
+
+  function exportUnmatchedCsv() {
+    if (unmatched.length === 0) return;
+    const csv = buildUnmatchedCsv(
+      unmatched.map((u) => ({
+        value: u.value,
+        scanned_by: userEmail,
+        scanned_at: u.at,
+      }))
+    );
+    const dateStr = new Date().toISOString().slice(0, 10);
+    downloadCsv(`${venueId}-unmatched-${dateStr}.csv`, csv);
   }
 
   async function startNewCount() {
@@ -332,19 +381,28 @@ export default function ScanApp({
 
           {unmatched.length > 0 && (
             <div className="mt-6">
-              <div className="mb-2 text-sm font-semibold text-gray-500">
-                Not in the catalogue ({unmatched.length})
+              <div className="mb-2 flex items-center justify-between">
+                <div className="text-sm font-semibold text-gray-500">
+                  Not in the catalogue ({unmatched.length})
+                </div>
+                <button
+                  onClick={exportUnmatchedCsv}
+                  className="text-xs font-medium text-brand underline"
+                >
+                  Export CSV
+                </button>
               </div>
               <ul className="flex flex-col gap-1">
-                {unmatched.map((u, i) => (
-                  <li key={i} className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                {unmatched.map((u) => (
+                  <li key={u.rowId} className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
                     {u.value} <span className="text-amber-400">· {u.at}</span>
                   </li>
                 ))}
               </ul>
               <p className="mt-1 text-xs text-gray-400">
                 Ring these up through Snacks → Unidentified Beverage with the barcode in Order
-                notes at the till, per the POS SOP, and flag to a manager.
+                notes at the till, per the POS SOP, and flag to a manager. This list is saved as
+                you scan, so it's visible from any device signed in to this count.
               </p>
             </div>
           )}
