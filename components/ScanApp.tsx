@@ -213,6 +213,17 @@ export default function ScanApp({
     setSaving(false);
   }
 
+  function handleQuantityKeyDown(e: React.KeyboardEvent<HTMLInputElement>, rowId: string) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      // Blurring persists the quantity (onBlur), then we jump straight back
+      // to the scan field so the next barcode can be scanned immediately.
+      persistQuantity(rowId, e.currentTarget.value);
+      e.currentTarget.blur();
+      focusInput();
+    }
+  }
+
   async function removeRow(rowId: string) {
     setItems((prev) => prev.filter((it) => it.rowId !== rowId));
     await supabase.from("stock_session_items").delete().eq("id", rowId);
@@ -360,6 +371,7 @@ export default function ScanApp({
                   placeholder="Qty"
                   onChange={(e) => updateLocalQuantity(it.rowId, e.target.value)}
                   onBlur={(e) => persistQuantity(it.rowId, e.target.value)}
+                  onKeyDown={(e) => handleQuantityKeyDown(e, it.rowId)}
                   className="w-20 rounded-lg border border-gray-300 px-2 py-2 text-right text-lg"
                 />
                 <button
