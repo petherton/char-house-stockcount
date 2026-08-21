@@ -22,9 +22,35 @@ type UnmatchedRow = {
   rowId: string; // stock_session_unmatched.id
   value: string;
   at: string;
+  description: string | null;
+  imageUrl: string | null;
+};
+
+type UnmatchedDraft = {
+  open: boolean;
+  description: string;
+  file: File | null;
+  saving: boolean;
+};
+
+type IncorrectDraft = {
+  open: boolean;
+  description: string;
+  file: File | null;
+  saving: boolean;
+  done: boolean;
 };
 
 type Venue = { id: string; name: string };
+
+const emptyUnmatchedDraft: UnmatchedDraft = { open: true, description: "", file: null, saving: false };
+const emptyIncorrectDraft: IncorrectDraft = {
+  open: true,
+  description: "",
+  file: null,
+  saving: false,
+  done: false,
+};
 
 export default function ScanApp({
   venueId,
@@ -45,6 +71,8 @@ export default function ScanApp({
   const [items, setItems] = useState<ItemRow[]>([]);
   const [barcode, setBarcode] = useState("");
   const [unmatched, setUnmatched] = useState<UnmatchedRow[]>([]);
+  const [unmatchedDrafts, setUnmatchedDrafts] = useState<Record<string, UnmatchedDraft>>({});
+  const [incorrectDrafts, setIncorrectDrafts] = useState<Record<string, IncorrectDraft>>({});
   const [flash, setFlash] = useState<{ type: "ok" | "err"; text: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -94,7 +122,7 @@ export default function ScanApp({
           .order("updated_at", { ascending: false }),
         supabase
           .from("stock_session_unmatched")
-          .select("id, value, scanned_at")
+          .select("id, value, scanned_at, description, image_url")
           .eq("session_id", sid)
           .order("scanned_at", { ascending: false }),
       ]);
@@ -114,6 +142,8 @@ export default function ScanApp({
             rowId: u.id,
             value: u.value,
             at: new Date(u.scanned_at).toLocaleTimeString(),
+            description: u.description ?? null,
+            imageUrl: u.image_url ?? null,
           }))
         );
         setLoading(false);
@@ -160,7 +190,7 @@ export default function ScanApp({
       const { data: newUnmatched, error: unmatchedErr } = await supabase
         .from("stock_session_unmatched")
         .insert({ session_id: sessionId, value, scanned_by: userEmail })
-        .select("id, value, scanned_at")
+        .select("id, value, scanned_at, description, image_url")
         .single();
 
       if (!unmatchedErr && newUnmatched) {
@@ -169,6 +199,8 @@ export default function ScanApp({
             rowId: newUnmatched.id,
             value: newUnmatched.value,
             at: new Date(newUnmatched.scanned_at).toLocaleTimeString(),
+            description: newUnmatched.description ?? null,
+            imageUrl: newUnmatched.image_url ?? null,
           },
           ...prev,
         ]);
@@ -231,6 +263,120 @@ export default function ScanApp({
     focusInput();
   }
 
+  async function uploadPhoto(file: File, folder: string): Promise<string | null> {
+    const ext = file.name.split(".").pop() || "jpg";
+    const path = `${folder}/${crypto.randomUUID()}.${ext}`;
+    const { error } = await supabase.storage.from("stock-photos").upload(path, file, {
+      upsert: false,
+      contentType: file.type || "image/jpeg",
+    });
+    if (error) return null;
+    const { data } = supabase.storage.from("stock-photos").getPublicUrl(path);
+    return data.publicUrl;
+  }
+
+  // --- "Not in the catalogue" rows: add a description / photo -------------
+
+  function toggleUnmatchedForm(rowId: string) {
+    setUnmatchedDrafts((prev) => ({
+      ...prev,
+      [rowId]: prev[rowId] ? { ...prev[rowId], open: !prev[rowId].open } : { ...emptyUnmatchedDraft },
+    }));
+  }
+
+  function updateUnmatchedDraft(rowId: string, patch: Partial<UnmatchedDraft>) {
+    setUnmatchedDrafts((prev) => ({
+      ...prev,
+      [rowId]: { ...(prev[rowId] ?? emptyUnmatchedDraft), ...patch },
+    }));
+  }
+
+  async function saveUnmatchedDetails(rowId: string) {
+    const draft = unmatchedDrafts[rowId];
+    if (!draft || draft.saving) return;
+    if (!draft.description.trim() && !draft.file) {
+      setFlash({ type: "err", text: "Add a description or a photo first." });
+      return;
+    }
+    updateUnmatchedDraft(rowId, { saving: true });
+
+    let imageUrl: string | null = null;
+    if (draft.file) {
+      imageUrl = await uploadPhoto(draft.file, `unmatched/${sessionId}`);
+    }
+
+    const update: Record<string, unknown> = { resolved: true };
+    if (draft.description.trim()) update.description = draft.description.trim();
+    if (imageUrl) update.image_url = imageUrl;
+
+    const { data, error } = await supabase
+      .from("stock_session_unmatched")
+      .update(update)
+      .eq("id", rowId)
+      .select("id, description, image_url")
+      .single();
+
+    if (!error && data) {
+      setUnmatched((prev) =>
+        prev.map((u) =>
+          u.rowId === rowId ? { ...u, description: data.description, imageUrl: data.image_url } : u
+        )
+      );
+      setUnmatchedDrafts((prev) => ({ ...prev, [rowId]: { open: false, description: "", file: null, saving: false } }));
+      setFlash({ type: "ok", text: "Details saved — thanks!" });
+    } else {
+      updateUnmatchedDraft(rowId, { saving: false });
+      setFlash({ type: "err", text: "Couldn't save those details, try again." });
+    }
+  }
+
+  // --- Matched product rows: flag "this isn't the right product" ----------
+
+  function toggleIncorrectForm(rowId: string) {
+    setIncorrectDrafts((prev) => ({
+      ...prev,
+      [rowId]: prev[rowId] ? { ...prev[rowId], open: !prev[rowId].open } : { ...emptyIncorrectDraft },
+    }));
+  }
+
+  function updateIncorrectDraft(rowId: string, patch: Partial<IncorrectDraft>) {
+    setIncorrectDrafts((prev) => ({
+      ...prev,
+      [rowId]: { ...(prev[rowId] ?? emptyIncorrectDraft), ...patch },
+    }));
+  }
+
+  async function submitIncorrect(rowId: string, product: Product) {
+    const draft = incorrectDrafts[rowId];
+    if (!draft || draft.saving || !sessionId) return;
+    updateIncorrectDraft(rowId, { saving: true });
+
+    let imageUrl: string | null = null;
+    if (draft.file) {
+      imageUrl = await uploadPhoto(draft.file, `incorrect/${sessionId}`);
+    }
+
+    const { error } = await supabase.from("stock_session_incorrect_matches").insert({
+      session_id: sessionId,
+      product_id: product.id,
+      scanned_value: product.barcode ?? product.sku,
+      description: draft.description.trim() || null,
+      image_url: imageUrl,
+      flagged_by: userEmail,
+    });
+
+    if (!error) {
+      setIncorrectDrafts((prev) => ({
+        ...prev,
+        [rowId]: { open: false, description: "", file: null, saving: false, done: true },
+      }));
+      setFlash({ type: "ok", text: "Reported — a manager will fix the catalogue entry." });
+    } else {
+      updateIncorrectDraft(rowId, { saving: false });
+      setFlash({ type: "err", text: "Couldn't send that report, try again." });
+    }
+  }
+
   async function exportCsv() {
     if (!sessionId) return;
     const csv = buildStockCountCsv(
@@ -256,6 +402,8 @@ export default function ScanApp({
         value: u.value,
         scanned_by: userEmail,
         scanned_at: u.at,
+        description: u.description,
+        image_url: u.imageUrl,
       }))
     );
     const dateStr = new Date().toISOString().slice(0, 10);
@@ -277,6 +425,8 @@ export default function ScanApp({
     setSessionStartedAt(created.created_at);
     setItems([]);
     setUnmatched([]);
+    setUnmatchedDrafts({});
+    setIncorrectDrafts({});
     focusInput();
   }
 
@@ -352,38 +502,88 @@ export default function ScanApp({
           </div>
 
           <ul className="flex flex-col gap-2">
-            {items.map((it) => (
-              <li
-                key={it.rowId}
-                id={`row-${it.rowId}`}
-                className="flex items-center gap-3 rounded-xl border border-gray-200 bg-white px-3 py-3 shadow-sm"
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="truncate font-medium text-gray-800">{it.product.name}</div>
-                  <div className="truncate text-xs text-gray-400">
-                    SKU {it.product.sku ?? "—"} · {it.product.barcode ?? "no barcode"}
-                  </div>
-                </div>
-                <input
-                  id={`qty-${it.rowId}`}
-                  type="number"
-                  inputMode="decimal"
-                  value={it.quantity}
-                  placeholder="Qty"
-                  onChange={(e) => updateLocalQuantity(it.rowId, e.target.value)}
-                  onBlur={(e) => persistQuantity(it.rowId, e.target.value)}
-                  onKeyDown={(e) => handleQuantityKeyDown(e, it.rowId)}
-                  className="w-20 rounded-lg border border-gray-300 px-2 py-2 text-right text-lg"
-                />
-                <button
-                  onClick={() => removeRow(it.rowId)}
-                  aria-label="Remove"
-                  className="text-gray-300 hover:text-red-500"
+            {items.map((it) => {
+              const incorrect = incorrectDrafts[it.rowId];
+              return (
+                <li
+                  key={it.rowId}
+                  id={`row-${it.rowId}`}
+                  className="flex flex-col gap-2 rounded-xl border border-gray-200 bg-white px-3 py-3 shadow-sm"
                 >
-                  ✕
-                </button>
-              </li>
-            ))}
+                  <div className="flex items-center gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate font-medium text-gray-800">{it.product.name}</div>
+                      <div className="truncate text-xs text-gray-400">
+                        SKU {it.product.sku ?? "—"} · {it.product.barcode ?? "no barcode"}
+                      </div>
+                    </div>
+                    <input
+                      id={`qty-${it.rowId}`}
+                      type="number"
+                      inputMode="decimal"
+                      value={it.quantity}
+                      placeholder="Qty"
+                      onChange={(e) => updateLocalQuantity(it.rowId, e.target.value)}
+                      onBlur={(e) => persistQuantity(it.rowId, e.target.value)}
+                      onKeyDown={(e) => handleQuantityKeyDown(e, it.rowId)}
+                      className="w-20 rounded-lg border border-gray-300 px-2 py-2 text-right text-lg"
+                    />
+                    <button
+                      onClick={() => removeRow(it.rowId)}
+                      aria-label="Remove"
+                      className="text-gray-300 hover:text-red-500"
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  {incorrect?.done ? (
+                    <div className="rounded-lg bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700">
+                      ⚠ Reported as wrong product
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => toggleIncorrectForm(it.rowId)}
+                      className="self-start text-xs font-medium text-gray-400 underline"
+                    >
+                      {incorrect?.open ? "Cancel" : "This isn't the right product"}
+                    </button>
+                  )}
+
+                  {incorrect?.open && !incorrect?.done && (
+                    <div className="flex flex-col gap-2 rounded-lg bg-gray-50 p-3">
+                      <p className="text-xs text-gray-500">
+                        The barcode matched this product, but it's not what's actually on the
+                        shelf. Tell us what it really is so a manager can fix the catalogue.
+                      </p>
+                      <textarea
+                        value={incorrect.description}
+                        onChange={(e) => updateIncorrectDraft(it.rowId, { description: e.target.value })}
+                        placeholder="What is this item actually?"
+                        rows={2}
+                        className="w-full rounded-lg border border-gray-300 px-2 py-2 text-sm"
+                      />
+                      <input
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        onChange={(e) =>
+                          updateIncorrectDraft(it.rowId, { file: e.target.files?.[0] ?? null })
+                        }
+                        className="text-xs text-gray-500"
+                      />
+                      <button
+                        onClick={() => submitIncorrect(it.rowId, it.product)}
+                        disabled={incorrect.saving}
+                        className="rounded-lg bg-amber-500 py-2 text-sm font-semibold text-white disabled:opacity-40"
+                      >
+                        {incorrect.saving ? "Sending…" : "Report incorrect product"}
+                      </button>
+                    </div>
+                  )}
+                </li>
+              );
+            })}
           </ul>
 
           {items.length === 0 && (
@@ -405,12 +605,67 @@ export default function ScanApp({
                   Export CSV
                 </button>
               </div>
-              <ul className="flex flex-col gap-1">
-                {unmatched.map((u) => (
-                  <li key={u.rowId} className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                    {u.value} <span className="text-amber-400">· {u.at}</span>
-                  </li>
-                ))}
+              <ul className="flex flex-col gap-2">
+                {unmatched.map((u) => {
+                  const draft = unmatchedDrafts[u.rowId];
+                  const hasDetails = Boolean(u.description || u.imageUrl);
+                  return (
+                    <li key={u.rowId} className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                      <div className="flex items-center justify-between gap-2">
+                        <span>
+                          {u.value} <span className="text-amber-400">· {u.at}</span>
+                        </span>
+                        {!hasDetails && (
+                          <button
+                            onClick={() => toggleUnmatchedForm(u.rowId)}
+                            className="whitespace-nowrap text-xs font-medium text-amber-700 underline"
+                          >
+                            {draft?.open ? "Cancel" : "Add description / photo"}
+                          </button>
+                        )}
+                      </div>
+
+                      {hasDetails && (
+                        <div className="mt-1 flex items-center gap-2 text-xs text-amber-700">
+                          <span>✓ Details added{u.description ? `: ${u.description}` : ""}</span>
+                          {u.imageUrl && (
+                            <a href={u.imageUrl} target="_blank" rel="noreferrer" className="underline">
+                              View photo
+                            </a>
+                          )}
+                        </div>
+                      )}
+
+                      {draft?.open && !hasDetails && (
+                        <div className="mt-2 flex flex-col gap-2 rounded-lg bg-white p-3">
+                          <textarea
+                            value={draft.description}
+                            onChange={(e) => updateUnmatchedDraft(u.rowId, { description: e.target.value })}
+                            placeholder="What is this product? e.g. brand, size, flavour"
+                            rows={2}
+                            className="w-full rounded-lg border border-gray-300 px-2 py-2 text-sm text-gray-700"
+                          />
+                          <input
+                            type="file"
+                            accept="image/*"
+                            capture="environment"
+                            onChange={(e) =>
+                              updateUnmatchedDraft(u.rowId, { file: e.target.files?.[0] ?? null })
+                            }
+                            className="text-xs text-gray-500"
+                          />
+                          <button
+                            onClick={() => saveUnmatchedDetails(u.rowId)}
+                            disabled={draft.saving}
+                            className="rounded-lg bg-brand py-2 text-sm font-semibold text-white disabled:opacity-40"
+                          >
+                            {draft.saving ? "Saving…" : "Save details"}
+                          </button>
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
               <p className="mt-1 text-xs text-gray-400">
                 Ring these up through Snacks → Unidentified Beverage with the barcode in Order
