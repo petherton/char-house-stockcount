@@ -15,7 +15,11 @@ export const runtime = "nodejs";
  * own product export) and break the CSV re-import workflow. Instead we
  * match onto an existing product by barcode, then SKU, and only fall back
  * to Product Number (or barcode/SKU) as the id for products we've never
- * seen before.
+ * seen before. (There's no separate "Lightspeed Product ID" field exposed
+ * by this explore — Product Number is the closest thing to it.)
+ *
+ * Also carries POS Category and Reporting Group through onto `products`,
+ * for reporting.
  */
 
 function admin() {
@@ -52,11 +56,20 @@ function clean(v: unknown): string | null {
   return s;
 }
 
-/** Match a Looker field by fuzzy key substring — robust to the exact LookML field id. */
+/** Strip everything but letters/digits so "product_name", "Product Name" and
+ * "products.name" all normalize the same way. */
+function normKey(k: string): string {
+  return k.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/** Match a Looker field by fuzzy key substring — robust to the exact LookML field id,
+ * whether it's snake_case ("product_name"), a display label ("Product Name"), or
+ * dotted ("products.name" — note the plural view name, hence "products" not "product"). */
 function pick(row: Record<string, unknown>, ...substrings: string[]): unknown {
+  const wanted = substrings.map(normKey);
   for (const key of Object.keys(row)) {
-    const k = key.toLowerCase();
-    if (substrings.some((s) => k.includes(s))) return row[key];
+    const nk = normKey(key);
+    if (wanted.some((w) => nk.includes(w))) return row[key];
   }
   return undefined;
 }
@@ -101,6 +114,7 @@ export async function POST(req: NextRequest, { params }: { params: { token: stri
       : [];
 
     counters.rows_received = rows.length;
+    const sampleKeys = rows.length ? Object.keys(rows[0]).join(", ") : null;
 
     if (!rows.length) {
       return NextResponse.json(
@@ -140,6 +154,8 @@ export async function POST(req: NextRequest, { params }: { params: { token: stri
       name: string;
       sku: string | null;
       barcode: string | null;
+      pos_category: string | null;
+      reporting_group: string | null;
       is_active: boolean;
     };
     const productUpserts = new Map<string, ProductUpsert>(); // key: venue_id|lightspeed_product_id
@@ -147,10 +163,14 @@ export async function POST(req: NextRequest, { params }: { params: { token: stri
 
     for (const row of rows) {
       const siteName = clean(pick(row, "site_name") ?? pick(row, "site.name") ?? pick(row, "site"));
-      const productName = clean(pick(row, "product_name"));
+      const productName = clean(
+        pick(row, "product_name", "products.name", "products name", "product.name")
+      );
       const productNumber = clean(pick(row, "product_number"));
       const barcode = clean(pick(row, "barcode"));
       const sku = clean(pick(row, "sku"));
+      const posCategory = clean(pick(row, "pos_category_name", "pos category name"));
+      const reportingGroup = clean(pick(row, "reporting_group_name", "reporting group name"));
       const quantityRaw = unwrap(pick(row, "quantity"));
 
       if (!siteName) {
@@ -193,6 +213,8 @@ export async function POST(req: NextRequest, { params }: { params: { token: stri
         name: productName,
         sku,
         barcode,
+        pos_category: posCategory,
+        reporting_group: reportingGroup,
         is_active: true,
       });
 
@@ -251,7 +273,7 @@ export async function POST(req: NextRequest, { params }: { params: { token: stri
       counters.stock_levels_upserted += batch.length;
     }
 
-    await supabase.from("webhook_runs").insert(counters);
+    await supabase.from("webhook_runs").insert({ ...counters, sample_keys: sampleKeys });
 
     return NextResponse.json({ ok: true, ...counters });
   } catch (err) {
