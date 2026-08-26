@@ -59,3 +59,31 @@ insert into venues (id, name) values ('restaurant', 'Restaurant');
 Then seed that venue's `products` rows (same shape as `seed.sql`) with its
 own Lightspeed product export. Staff will see a venue switcher automatically
 once more than one venue exists.
+
+New venues also get created automatically by the live stock feed below, the
+first time it sees a site it doesn't recognise.
+
+## Live stock feed (Lightspeed Insights → webhook)
+
+`/api/webhooks/lightspeed-stock/[token]` receives the "Stock Count Product
+Feed" Look scheduled out of Lightspeed Insights (Explore → Stock Levels →
+saved as a Look → Schedule → Webhook → format **JSON — Simple, Inline**) and
+keeps `venues`, `products` and `product_stock_levels` up to date for every
+site Lightspeed reports on — not just Bottle Shop.
+
+Setup:
+
+1. Set `SUPABASE_SERVICE_ROLE_KEY` (Supabase → Settings → API) and
+   `LIGHTSPEED_WEBHOOK_SECRET` (any long random string) on the host.
+2. In the Insights schedule, set the Webhook URL to
+   `https://<your-host>/api/webhooks/lightspeed-stock/<LIGHTSPEED_WEBHOOK_SECRET>`.
+3. `GET` the same URL (with the token) to confirm it's live; `Send Test` from
+   the schedule dialog to confirm the pipeline end to end.
+
+Matching notes: the Insights "Stock Level" explore doesn't expose
+Lightspeed's real internal product id, so the route matches incoming rows
+onto existing `products` by barcode first, then SKU, and only invents a new
+identity (Product Number, else barcode, else SKU) for a product it's never
+seen before — so it can't silently disconnect Bottle Shop's existing
+products from the real Lightspeed ids they were seeded with. Each run is
+logged to `webhook_runs` (rows received, matched/created counts, skips).
