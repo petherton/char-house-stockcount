@@ -136,6 +136,15 @@ export default function ProductImportButton({
       return;
     }
 
+    if (updates.length && !exportRows) {
+      setMessage({
+        type: "err",
+        text: `This count changes ${updates.length} existing product${updates.length === 1 ? "" : "s"}. Attach the latest Lightspeed product export above first, so those rows import cleanly.`,
+      });
+      setBusy(false);
+      return;
+    }
+
     const result = buildProductImportCsv({
       updates,
       newProducts,
@@ -149,9 +158,11 @@ export default function ProductImportButton({
     const parts = [`${result.updated} updated`, `${result.created} new`];
     let text = `Product import CSV downloaded (${parts.join(", ")}). Import it in Lightspeed Back Office under Products, then check the changes.`;
     if (result.notInExport.length) {
-      text += ` Not found in the export, so only name/price were written for: ${result.notInExport.join(", ")}.`;
+      text += ` ${result.notInExport.length} change${result.notInExport.length === 1 ? " isn't" : "s aren't"} in the file because the product isn't in that export (deleted, or not on this site). Do these by hand in Back Office: ${result.notInExport
+        .map((n) => `${n.name} (${n.change})`)
+        .join("; ")}.`;
     }
-    setMessage({ type: "ok", text });
+    setMessage({ type: result.notInExport.length ? "err" : "ok", text });
     setBusy(false);
   }
 
@@ -192,7 +203,7 @@ export default function ProductImportButton({
 
             <label className="mb-1 block text-sm font-medium text-gray-700">
               Latest Lightspeed product export for {venueName}{" "}
-              <span className="font-normal text-gray-400">(recommended)</span>
+              <span className="font-normal text-gray-400">(Back Office → Products → Export)</span>
             </label>
             <input
               type="file"
@@ -203,7 +214,7 @@ export default function ProductImportButton({
             <p className="mb-4 text-xs text-gray-400">
               {exportName
                 ? `Using ${exportName}. Changed products keep all their other Lightspeed settings.`
-                : "Without it, changed products are written with only their ID, name, barcode, SKU and price, so check them after importing."}
+                : "Needed for name or price changes. Not needed if the count only adds new products."}
             </p>
 
             {message && (

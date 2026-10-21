@@ -193,10 +193,24 @@ export type ProductImportResult = {
   csv: string;
   updated: number;
   created: number;
-  /** Updates that couldn't be found in the uploaded export (written from app data only). */
-  notInExport: string[];
+  /**
+   * Changes to products that aren't in the attached export. These are left out
+   * of the CSV (a partial row can fail the import or blank fields), so they
+   * need doing by hand in Back Office.
+   */
+  notInExport: { name: string; change: string }[];
   usedExport: boolean;
 };
+
+/** Barcodes are sometimes stored with and without a leading zero (UPC vs EAN). */
+export function normBarcode(b: string | null | undefined): string {
+  return (b ?? "").trim().replace(/^0+/, "");
+}
+
+/** True if a "name" is really a price someone typed in the wrong box. */
+export function looksLikePrice(v: string): boolean {
+  return /^\s*\$?\d+([.,]\d{1,2})?\s*$/.test(v);
+}
 
 function money(n: number) {
   return n.toFixed(2);
@@ -226,30 +240,32 @@ export function buildProductImportCsv(opts: {
   const byBarcode = new Map<string, LightspeedRow>();
   for (const r of baseExport ?? []) {
     if (r.ProductID) byId.set(r.ProductID, r);
-    if (r.Barcode) byBarcode.set(r.Barcode, r);
+    if (r.Barcode) byBarcode.set(normBarcode(r.Barcode), r);
   }
   const groupFromExport =
     (baseExport ?? []).find((r) => r.ReportingGroup)?.ReportingGroup || reportingGroup;
 
   const out: LightspeedRow[] = [];
-  const notInExport: string[] = [];
+  const notInExport: { name: string; change: string }[] = [];
 
   for (const u of updates) {
     if (!u.new_name && u.new_sell_price === null) continue;
     const base =
-      byId.get(u.lightspeed_product_id) ?? (u.barcode ? byBarcode.get(u.barcode) : undefined);
-    let row: LightspeedRow;
-    if (base) {
-      row = { ...base };
-    } else {
-      if (baseExport) notInExport.push(u.new_name || u.current_name);
-      row = {
-        ProductID: u.lightspeed_product_id,
-        ProductName: u.current_name,
-        Barcode: u.barcode ?? "",
-        SKU: u.sku ?? "",
-      };
+      byId.get(u.lightspeed_product_id) ??
+      (u.barcode ? byBarcode.get(normBarcode(u.barcode)) : undefined);
+    if (!base) {
+      const change = [
+        u.new_name ? `rename to "${u.new_name}"` : null,
+        u.new_sell_price !== null ? `price $${money(u.new_sell_price)}` : null,
+      ]
+        .filter(Boolean)
+        .join(", ");
+      notInExport.push({ name: u.current_name, change });
+      continue;
     }
+    // Matched by barcode onto a different (current) Lightspeed product: base
+    // carries the right ProductID.
+    const row: LightspeedRow = { ...base };
     if (u.new_name) {
       row.ProductName = u.new_name;
       // Placeholder products were created with this note; clear it once named.

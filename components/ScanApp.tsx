@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { buildStockCountCsv, buildUnmatchedCsv, downloadCsv } from "@/lib/csv";
+import { buildStockCountCsv, buildUnmatchedCsv, downloadCsv, looksLikePrice, normBarcode } from "@/lib/csv";
 import ProductImportButton from "@/components/ProductImportButton";
 
 type Product = {
@@ -276,9 +276,16 @@ export default function ScanApp({
       return;
     }
 
+    // Barcodes can be stored with or without a leading zero (UPC-A vs EAN-13).
+    const stripped = normBarcode(value);
+    const barcodeVariants = Array.from(
+      new Set([value, stripped, `0${stripped}`].filter((v) => /^[0-9A-Za-z-]+$/.test(v)))
+    );
+
     // Already in this session's list? Just jump to its quantity field.
     const existing = items.find(
-      (it) => it.product.barcode === value || it.product.sku === value
+      (it) =>
+        (it.product.barcode && normBarcode(it.product.barcode) === stripped) || it.product.sku === value
     );
     if (existing) {
       setFlash({ type: "ok", text: `${existing.product.name} — already on the list, edit its quantity below.` });
@@ -293,7 +300,8 @@ export default function ScanApp({
       .select("id, lightspeed_product_id, sku, barcode, name, sell_price, price_updated_at")
       .eq("venue_id", venueId)
       .eq("is_active", true)
-      .or(`barcode.eq.${value},sku.eq.${value}`)
+      .or([...barcodeVariants.map((b) => `barcode.eq.${b}`), `sku.eq.${value}`].join(","))
+      .order("sell_price", { ascending: false, nullsFirst: false })
       .limit(1)
       .maybeSingle();
 
@@ -380,6 +388,13 @@ export default function ScanApp({
       return;
     }
     const name = it.newName.trim();
+    if (name && looksLikePrice(name)) {
+      setFlash({
+        type: "err",
+        text: `"${name}" looks like a price. Put prices in the "New sell price" box and leave the name blank unless it's wrong.`,
+      });
+      return;
+    }
     setSaving(true);
     const { error } = await supabase
       .from("stock_session_items")
@@ -453,6 +468,10 @@ export default function ScanApp({
     const draft = unmatchedDrafts[rowId];
     if (!draft || draft.saving) return;
     const name = draft.productName.trim();
+    if (name && looksLikePrice(name)) {
+      setFlash({ type: "err", text: `"${name}" looks like a price. Put it in the "Sell price" box and type the product's name.` });
+      return;
+    }
     if (!name && !draft.description.trim() && !draft.file) {
       setFlash({ type: "err", text: "Add a product name (or at least a note or photo) first." });
       return;
