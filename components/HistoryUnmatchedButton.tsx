@@ -18,7 +18,7 @@ export default function HistoryUnmatchedButton({
     const supabase = createClient();
     const { data: rows } = await supabase
       .from("stock_session_unmatched")
-      .select("value, scanned_by, scanned_at, description, image_url")
+      .select("value, scanned_by, scanned_at, description, image_url, product_name, sell_price, quantity")
       .eq("session_id", sessionId)
       .order("scanned_at", { ascending: true });
 
@@ -29,6 +29,9 @@ export default function HistoryUnmatchedButton({
         scanned_at: new Date(r.scanned_at).toLocaleString(),
         description: r.description,
         image_url: r.image_url,
+        product_name: r.product_name,
+        sell_price: r.sell_price,
+        quantity: r.quantity,
       }))
     );
     downloadCsv(`${venueId}-unmatched-${sessionId.slice(0, 8)}.csv`, csv);

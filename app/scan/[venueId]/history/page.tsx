@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import HistoryDownloadButton from "@/components/HistoryDownloadButton";
 import HistoryUnmatchedButton from "@/components/HistoryUnmatchedButton";
 import HistoryIncorrectButton from "@/components/HistoryIncorrectButton";
+import ProductImportButton from "@/components/ProductImportButton";
 
 export default async function HistoryPage({
   params,
@@ -21,6 +22,12 @@ export default async function HistoryPage({
     .eq("venue_id", params.venueId)
     .order("created_at", { ascending: false })
     .limit(30);
+
+  const { data: venue } = await supabase
+    .from("venues")
+    .select("name")
+    .eq("id", params.venueId)
+    .maybeSingle();
 
   const sessionIds = (sessions ?? []).map((s) => s.id);
 
@@ -71,6 +78,12 @@ export default async function HistoryPage({
             </div>
             <div className="flex flex-wrap gap-2">
               <HistoryDownloadButton sessionId={s.id} venueId={params.venueId} />
+              <ProductImportButton
+                sessionId={s.id}
+                venueId={params.venueId}
+                venueName={venue?.name ?? params.venueId}
+                variant="history"
+              />
               {unmatchedCounts[s.id] > 0 && (
                 <HistoryUnmatchedButton sessionId={s.id} venueId={params.venueId} />
               )}

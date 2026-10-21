@@ -87,3 +87,27 @@ identity (Product Number, else barcode, else SKU) for a product it's never
 seen before — so it can't silently disconnect Bottle Shop's existing
 products from the real Lightspeed ids they were seeded with. Each run is
 logged to `webhook_runs` (rows received, matched/created counts, skips).
+
+## Product edits and the Product import CSV
+
+During a count staff can, for any scanned product, change its name, set a
+new sell price (inc GST) and leave a note ("Change name / price / add note").
+Products whose Lightspeed name is still just a barcode open this panel
+automatically. For barcodes that don't match, "Add as new product" captures
+name, sell price, optional cost, container, size, category, qty on hand and
+notes.
+
+Two exports per count (on the count screen and under Past counts):
+
+- **Stock CSV**: `id,name,count` for Lightspeed Inventory → Stock counts.
+- **Product CSV**: a Lightspeed product import file (same 29 columns as the
+  Back Office product export). Attach the venue's latest product export when
+  prompted so changed products keep every other field; only the name and
+  price are changed. New products have a blank ProductID so Lightspeed
+  creates them, set to sell + buy + stock tracked, tagged
+  `stock-count-YYYY-MM-DD-new`.
+
+Counts for new products can't go in the Stock CSV until they exist in
+Lightspeed (no ProductID yet), so their qty is kept in the Unmatched CSV.
+
+Schema changes for this live in `migrations/2026-10-21_product_edits.sql`.
