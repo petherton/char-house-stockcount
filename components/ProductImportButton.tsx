@@ -53,6 +53,23 @@ export default function ProductImportButton({
     }
     setExportRows(rows);
     setExportName(`${file.name} (${rows.length} products)`);
+
+    // Keep the prices shown on the scan screen current.
+    const supabase = createClient();
+    const { data: updated, error } = await supabase.rpc("refresh_product_prices", {
+      p_venue_id: venueId,
+      prices: rows
+        .filter((r) => r.SellPriceIncTax !== undefined && r.SellPriceIncTax !== "")
+        .map((r) => ({ id: r.ProductID, barcode: r.Barcode, price: r.SellPriceIncTax })),
+    });
+    if (error) {
+      setMessage({ type: "err", text: `Couldn't refresh prices from that export: ${error.message}` });
+    } else {
+      setMessage({
+        type: "ok",
+        text: `Lightspeed prices refreshed for ${updated ?? 0} products. Rescan an item to see its new price.`,
+      });
+    }
   }
 
   async function build() {

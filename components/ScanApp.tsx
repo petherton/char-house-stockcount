@@ -11,6 +11,8 @@ type Product = {
   sku: string | null;
   barcode: string | null;
   name: string;
+  sell_price: number | null;
+  price_updated_at: string | null;
 };
 
 type ItemRow = {
@@ -53,6 +55,57 @@ const CONTAINERS = ["BOTTLE", "CAN", "UNIT", "BAG", "PACKET", "TUB", "KEG", "CON
 /** Placeholder products were created in Lightspeed with the barcode as their name. */
 function looksLikeBarcode(name: string) {
   return /^\d{6,14}$/.test(name.trim());
+}
+
+function formatPrice(n: number) {
+  return `$${Number(n).toFixed(2)}`;
+}
+
+/** The product's current Lightspeed sell price, so staff can check the shelf ticket. */
+function PriceTag({
+  price,
+  updatedAt,
+  newPrice,
+}: {
+  price: number | null;
+  updatedAt: string | null;
+  newPrice: string;
+}) {
+  const changed = newPrice.trim() !== "" && Number.isFinite(Number(newPrice.trim().replace(/^\$/, "")));
+  const asAt = updatedAt
+    ? new Date(updatedAt).toLocaleDateString(undefined, { day: "numeric", month: "short" })
+    : null;
+  if (price === null || Number(price) === 0) {
+    return (
+      <div className="shrink-0 text-right">
+        <div className="text-xs font-semibold text-amber-600">No price</div>
+        <div className="text-[10px] text-gray-400">in Lightspeed</div>
+        {changed && (
+          <div className="text-sm font-bold text-blue-700">
+            {formatPrice(Number(newPrice.trim().replace(/^\$/, "")))}
+          </div>
+        )}
+      </div>
+    );
+  }
+  return (
+    <div className="shrink-0 text-right" title={asAt ? `Lightspeed price as at ${asAt}` : "Lightspeed price"}>
+      <div
+        className={`text-lg font-bold leading-tight ${
+          changed ? "text-gray-400 line-through" : "text-navy"
+        }`}
+      >
+        {formatPrice(price)}
+      </div>
+      {changed ? (
+        <div className="text-sm font-bold text-blue-700">
+          {formatPrice(Number(newPrice.trim().replace(/^\$/, "")))}
+        </div>
+      ) : (
+        <div className="text-[10px] text-gray-400">Lightspeed{asAt ? ` · ${asAt}` : ""}</div>
+      )}
+    </div>
+  );
 }
 
 function toNumberOrNull(v: string): number | null {
@@ -159,7 +212,7 @@ export default function ScanApp({
       const [{ data: rows }, { data: unmatchedRows }, { data: categoryRows }] = await Promise.all([
         supabase
           .from("stock_session_items")
-          .select("id, quantity, new_name, new_sell_price, notes, product:products(id, lightspeed_product_id, sku, barcode, name)")
+          .select("id, quantity, new_name, new_sell_price, notes, product:products(id, lightspeed_product_id, sku, barcode, name, sell_price, price_updated_at)")
           .eq("session_id", sid)
           .order("updated_at", { ascending: false }),
         supabase
@@ -237,7 +290,7 @@ export default function ScanApp({
 
     const { data: product, error } = await supabase
       .from("products")
-      .select("id, lightspeed_product_id, sku, barcode, name")
+      .select("id, lightspeed_product_id, sku, barcode, name, sell_price, price_updated_at")
       .eq("venue_id", venueId)
       .eq("is_active", true)
       .or(`barcode.eq.${value},sku.eq.${value}`)
@@ -661,6 +714,11 @@ export default function ScanApp({
                         SKU {it.product.sku ?? "—"} · {it.product.barcode ?? "no barcode"}
                       </div>
                     </div>
+                    <PriceTag
+                      price={it.product.sell_price}
+                      updatedAt={it.product.price_updated_at}
+                      newPrice={it.newPrice}
+                    />
                     <input
                       id={`qty-${it.rowId}`}
                       type="number"
@@ -739,7 +797,11 @@ export default function ScanApp({
                           onChange={(e) => updateLocalItem(it.rowId, { newPrice: e.target.value })}
                           onBlur={() => persistEdits(it.rowId)}
                           inputMode="decimal"
-                          placeholder="Leave blank to keep the current price"
+                          placeholder={
+                            it.product.sell_price
+                              ? `Currently ${formatPrice(it.product.sell_price)} in Lightspeed`
+                              : "Leave blank to keep the current price"
+                          }
                           className="mt-1 w-full rounded-lg border border-gray-300 px-2 py-2 text-sm font-normal text-gray-800"
                         />
                       </label>
